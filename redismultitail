@@ -1,0 +1,79 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+from multiprocessing import Process, Queue
+import sys
+import urlparse
+
+try:
+    from Queue import Empty
+except ImportError:
+    from queue import Empty  # Python 3.x
+
+try:
+    import redis
+except ImportError:
+    print("ERROR: redismultitail requires redis-py. `pip install redis` and try again.")
+    sys.exit(1)
+
+
+def tail_redis(conn_url, key):
+    url = urlparse.urlparse(conn_url)
+
+    host = url.hostname
+    port = url.port
+
+    rc = redis.StrictRedis(host=host, port=port)
+
+    while 1:
+        _, res = rc.brpop(key)
+        yield res
+
+
+def make_reader(queue, url, key):
+    def _reader():
+        for item in tail_redis(url, key):
+            queue.put(item)
+    p = Process(target=_reader)
+    p.start()
+    return p
+
+
+def loop(queue):
+    while 1:
+        try:
+            data = queue.get(timeout=0.5)
+        except Empty:
+            pass
+        else:
+            print(data, end="")
+
+def usage():
+    print("Usage: redismultitail <list_key> <redis_url> [redis_url, [redis_url, [...]]]")
+    print()
+    print("e.g. redismultitail mylog redis://localhost:6379 redis://localhost:6380")
+
+def main():
+    if len(sys.argv) < 3:
+        usage()
+        sys.exit(1)
+
+    key = sys.argv[1]
+    urls = sys.argv[2:]
+    queue = Queue()
+    procs = []
+
+    for url in urls:
+        procs.append(make_reader(queue, url, key))
+
+    try:
+        loop(queue)
+
+    except KeyboardInterrupt:
+        for proc in procs:
+            proc.terminate()
+            proc.join()
+
+
+if __name__ == '__main__':
+    main()
